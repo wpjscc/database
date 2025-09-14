@@ -13,6 +13,8 @@ class UpsertQuery extends ActiveQuery
     protected array $columns   = [];
     protected array $values    = [];
     protected array $conflicts = [];
+    protected array $updates = [];
+
 
     public function __construct(?string $table = null)
     {
@@ -118,6 +120,22 @@ class UpsertQuery extends ActiveQuery
     }
 
     /**
+     * Set upsert update column names. Names can be provided as array, set of parameters or comma
+     * separated string.
+     *
+     * Examples:
+     * $upsert->updates(["name", "email"]);
+     * $upsert->updates("name", "email");
+     * $upsert->updates("name, email");
+     */
+    public function updates(array|string ...$updates): self
+    {
+        $this->updates = $this->fetchIdentifiers($updates);
+
+        return $this;
+    }
+
+    /**
      * Run the query and return last insert id.
      * Returns an assoc array of values if multiple columns were specified as returning columns.
      *
@@ -127,7 +145,6 @@ class UpsertQuery extends ActiveQuery
     {
         $params = new QueryParameters();
         $queryString = $this->sqlStatement($params);
-
         $this->driver->execute(
             $queryString,
             $params->getParameters(),
@@ -150,6 +167,7 @@ class UpsertQuery extends ActiveQuery
             'columns'   => $this->columns,
             'values'    => $this->values,
             'conflicts' => $this->conflicts,
+            'updates'   => $this->updates,
         ];
     }
 }
