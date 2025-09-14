@@ -1,5 +1,5 @@
 {
-    "name": "cycle/database",
+    "name": "wpjscc/database",
     "description": "DBAL, schema introspection, migration and pagination",
     "license": "MIT",
     "type": "library",
