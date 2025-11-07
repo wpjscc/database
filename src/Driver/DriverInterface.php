@@ -182,12 +182,13 @@ interface DriverInterface
      * Start SQL transaction with specified isolation level (not all DBMS support it). Nested
      * transactions are processed using savepoints.
      *
+     * Returns a driver instance bound to the started transaction. Implementations without
+     * dedicated transaction drivers MAY return `$this`.
+     *
      * @link   http://en.wikipedia.org/wiki/Database_transaction
      * @link   http://en.wikipedia.org/wiki/Isolation_(database_systems)
-     *
-     * @return bool True of success.
      */
-    public function beginTransaction(?string $isolationLevel = null): bool;
+    public function beginTransaction(?string $isolationLevel = null): DriverInterface;
 
     /**
      * Commit the active database transaction.

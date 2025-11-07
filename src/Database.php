@@ -191,9 +191,10 @@ final class Database implements DatabaseInterface
         }
     }
 
-    public function begin(?string $isolationLevel = null): bool
+    public function begin(?string $isolationLevel = null): DatabaseInterface
     {
-        return $this->getDriver(self::WRITE)->beginTransaction($isolationLevel);
+        $txDriver = $this->getDriver(self::WRITE)->beginTransaction($isolationLevel);
+        return new self($this->name, $this->prefix, $txDriver, $this->readDriver);
     }
 
     public function commit(): bool

@@ -262,7 +262,7 @@ abstract class Driver implements DriverInterface, NamedInterface, LoggerAwareInt
      * @link http://en.wikipedia.org/wiki/Isolation_(database_systems)
      *
      */
-    public function beginTransaction(?string $isolationLevel = null): bool
+    public function beginTransaction(?string $isolationLevel = null): DriverInterface
     {
         ++$this->transactionLevel;
 
@@ -274,7 +274,8 @@ abstract class Driver implements DriverInterface, NamedInterface, LoggerAwareInt
             $this->logger?->info('Begin transaction');
 
             try {
-                return $this->getPDO()->beginTransaction();
+                $this->getPDO()->beginTransaction();
+                return $this;
             } catch (\Throwable  $e) {
                 $e = $this->mapException($e, 'BEGIN TRANSACTION');
 
@@ -286,7 +287,8 @@ abstract class Driver implements DriverInterface, NamedInterface, LoggerAwareInt
 
                     try {
                         $this->transactionLevel = 1;
-                        return $this->getPDO()->beginTransaction();
+                        $this->getPDO()->beginTransaction();
+                        return $this;
                     } catch (\Throwable $e) {
                         $this->transactionLevel = 0;
                         throw $this->mapException($e, 'BEGIN TRANSACTION');
@@ -299,8 +301,7 @@ abstract class Driver implements DriverInterface, NamedInterface, LoggerAwareInt
         }
 
         $this->createSavepoint($this->transactionLevel);
-
-        return true;
+        return $this;
     }
 
     /**

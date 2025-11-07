@@ -156,7 +156,7 @@ class PostgresDriver extends Driver
      *
      *
      */
-    public function beginTransaction(?string $isolationLevel = null): bool
+    public function beginTransaction(?string $isolationLevel = null): \Cycle\Database\Driver\DriverInterface
     {
         ++$this->transactionLevel;
 
@@ -164,12 +164,11 @@ class PostgresDriver extends Driver
             $this->logger?->info('Begin transaction');
 
             try {
-                $ok = $this->getPDO()->beginTransaction();
+                $this->getPDO()->beginTransaction();
                 if ($isolationLevel !== null) {
                     $this->setIsolationLevel($isolationLevel);
                 }
-
-                return $ok;
+                return $this;
             } catch (\Throwable $e) {
                 $e = $this->mapException($e, 'BEGIN TRANSACTION');
 
@@ -181,7 +180,8 @@ class PostgresDriver extends Driver
 
                     try {
                         $this->transactionLevel = 1;
-                        return $this->getPDO()->beginTransaction();
+                        $this->getPDO()->beginTransaction();
+                        return $this;
                     } catch (\Throwable $e) {
                         $this->transactionLevel = 0;
                         throw $this->mapException($e, 'BEGIN TRANSACTION');
@@ -194,8 +194,7 @@ class PostgresDriver extends Driver
         }
 
         $this->createSavepoint($this->transactionLevel);
-
-        return true;
+        return $this;
     }
 
     /**

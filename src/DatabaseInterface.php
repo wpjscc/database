@@ -155,11 +155,13 @@ interface DatabaseInterface
     public function transaction(callable $callback, ?string $isolationLevel = null): mixed;
 
     /**
-     * Start database transaction.
+     * Start database transaction and return a Database instance bound to this transaction.
+     * The returned instance MUST route all writes to the transactional driver returned by
+     * DriverInterface::beginTransaction().
      *
      * @link http://en.wikipedia.org/wiki/Database_transaction
      */
-    public function begin(?string $isolationLevel = null): bool;
+    public function begin(?string $isolationLevel = null): DatabaseInterface;
 
     /**
      * Commit the active database transaction.
