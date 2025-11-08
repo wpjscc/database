@@ -166,14 +166,10 @@ final class Reflector
      */
     protected function beginTransaction(): void
     {
-        foreach ($this->drivers as $driver) {
-            if ($driver instanceof Driver) {
-                // do not cache statements for this transaction
-                $driver->beginTransaction(null, false);
-            } else {
-                $driver->beginTransaction(null);
-            }
+        foreach ($this->drivers as &$driver) {
+            $driver = $driver->beginTransaction(null);
         }
+        unset($driver);
     }
 
     /**
