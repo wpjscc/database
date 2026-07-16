@@ -162,12 +162,19 @@ class UpsertQuery extends ActiveQuery
 
     public function getTokens(): array
     {
+        $onConflict = OnConflict::target(...$this->conflicts);
+
+        if ($this->updates !== []) {
+            $onConflict = $onConflict->doUpdate($this->updates);
+        } else {
+            $onConflict = $onConflict->doUpdate();
+        }
+
         return [
-            'table'     => $this->table,
-            'columns'   => $this->columns,
-            'values'    => $this->values,
-            'conflicts' => $this->conflicts,
-            'updates'   => $this->updates,
+            'table'      => $this->table,
+            'columns'    => $this->columns,
+            'values'     => $this->values,
+            'onConflict' => $onConflict,
         ];
     }
 }

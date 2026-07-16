@@ -4,130 +4,174 @@ declare(strict_types=1);
 
 namespace Cycle\Database\Tests\Functional\Driver\SQLServer\Query;
 
-// phpcs:ignore
+use Cycle\Database\Driver\Postgres\PostgresOnConflict;
+use Cycle\Database\Driver\SQLServer\Query\SQLServerInsertQuery;
+use Cycle\Database\Driver\SQLServer\SQLServerOnConflict;
+use Cycle\Database\Exception\BuilderException;
+use Cycle\Database\Exception\CompilerException;
+use Cycle\Database\Injection\Expression;
 use Cycle\Database\Injection\Fragment;
+use Cycle\Database\Query\ConflictAction;
+use Cycle\Database\Query\OnConflict;
 use Cycle\Database\Tests\Functional\Driver\Common\Query\UpsertQueryTest as CommonClass;
 
 /**
  * @group driver
  * @group driver-sqlserver
  */
-final class UpsertQueryTest extends CommonClass
+class UpsertQueryTest extends CommonClass
 {
     public const DRIVER = 'sqlserver';
-    protected const QUERY_REQUIRES_CONFLICTS      = true;
-    protected const QUERY_WITH_VALUES             = 'MERGE INTO [table] WITH (holdlock) AS [target] USING ( VALUES (?, ?) ) AS [source] ([email], [name]) ON [target].[email] = [source].[email] WHEN MATCHED THEN UPDATE SET [target].[email] = [source].[email], [target].[name] = [source].[name] WHEN NOT MATCHED THEN INSERT ([email], [name]) VALUES ([source].[email], [source].[name]);';
-    protected const QUERY_WITH_STATES_VALUES      = 'MERGE INTO [table] WITH (holdlock) AS [target] USING ( VALUES (?, ?) ) AS [source] ([email], [name]) ON [target].[email] = [source].[email] WHEN MATCHED THEN UPDATE SET [target].[email] = [source].[email], [target].[name] = [source].[name] WHEN NOT MATCHED THEN INSERT ([email], [name]) VALUES ([source].[email], [source].[name]);';
-    protected const QUERY_WITH_MULTIPLE_ROWS      = 'MERGE INTO [table] WITH (holdlock) AS [target] USING ( VALUES (?, ?), (?, ?) ) AS [source] ([email], [name]) ON [target].[email] = [source].[email] WHEN MATCHED THEN UPDATE SET [target].[email] = [source].[email], [target].[name] = [source].[name] WHEN NOT MATCHED THEN INSERT ([email], [name]) VALUES ([source].[email], [source].[name]);';
-    protected const QUERY_WITH_EXPRESSIONS        = 'MERGE INTO [table] WITH (holdlock) AS [target] USING ( VALUES (?, ?, NOW(), NOW(), ?) ) AS [source] ([email], [name], [created_at], [updated_at], [deleted_at]) ON [target].[email] = [source].[email] WHEN MATCHED THEN UPDATE SET [target].[email] = [source].[email], [target].[name] = [source].[name], [target].[created_at] = [source].[created_at], [target].[updated_at] = [source].[updated_at], [target].[deleted_at] = [source].[deleted_at] WHEN NOT MATCHED THEN INSERT ([email], [name], [created_at], [updated_at], [deleted_at]) VALUES ([source].[email], [source].[name], [source].[created_at], [source].[updated_at], [source].[deleted_at]);';
-    protected const QUERY_WITH_FRAGMENTS          = 'MERGE INTO [table] WITH (holdlock) AS [target] USING ( VALUES (?, ?, NOW(), datetime(\'now\'), ?) ) AS [source] ([email], [name], [created_at], [updated_at], [deleted_at]) ON [target].[email] = [source].[email] WHEN MATCHED THEN UPDATE SET [target].[email] = [source].[email], [target].[name] = [source].[name], [target].[created_at] = [source].[created_at], [target].[updated_at] = [source].[updated_at], [target].[deleted_at] = [source].[deleted_at] WHEN NOT MATCHED THEN INSERT ([email], [name], [created_at], [updated_at], [deleted_at]) VALUES ([source].[email], [source].[name], [source].[created_at], [source].[updated_at], [source].[deleted_at]);';
-    protected const QUERY_WITH_CUSTOM_FRAGMENT    = 'MERGE INTO [table] WITH (holdlock) AS [target] USING ( VALUES (?, ?, NOW()) ) AS [source] ([email], [name], [expired_at]) ON [target].[email] = [source].[email] WHEN MATCHED THEN UPDATE SET [target].[email] = [source].[email], [target].[name] = [source].[name], [target].[expired_at] = [source].[expired_at] WHEN NOT MATCHED THEN INSERT ([email], [name], [expired_at]) VALUES ([source].[email], [source].[name], [source].[expired_at]);';
-    protected const QUERY_WITH_RETURNING_FRAGMENT = 'MERGE INTO [table] WITH (holdlock) AS [target] USING ( VALUES (?, ?, ?, NOW(), datetime(\'now\'), ?) ) AS [source] ([email], [name], [balance], [created_at], [updated_at], [deleted_at]) ON [target].[email] = [source].[email] WHEN MATCHED THEN UPDATE SET [target].[email] = [source].[email], [target].[name] = [source].[name], [target].[balance] = [source].[balance], [target].[created_at] = [source].[created_at], [target].[updated_at] = [source].[updated_at], [target].[deleted_at] = [source].[deleted_at] WHEN NOT MATCHED THEN INSERT ([email], [name], [balance], [created_at], [updated_at], [deleted_at]) VALUES ([source].[email], [source].[name], [source].[balance], [source].[created_at], [source].[updated_at], [source].[deleted_at]) OUTPUT INSERTED.[email], {balance} + 100 AS {modified_balance};';
 
-    public function testQueryWithFragmentsAndReturning(): void
+    public function testShorthandSingleColumn(): void
     {
-        $upsert = $this->database->upsert('table')
-            ->conflicts('email')
-            ->values([
-                'email' => 'adam@email.com',
-                'name' => 'Adam',
-                'balance' => 100,
-                'created_at' => new Fragment('NOW()'),
-                'updated_at' => new Fragment('datetime(\'now\')'),
-                'deleted_at' => null,
-            ])->returning('email', new Fragment('[balance] + 100 AS [modified_balance]'));
+        $q = $this->database->insert('users')
+            ->values(['email' => 'a@b.c', 'name' => 'Alex'])
+            ->onConflict('email');
 
-        $this->assertSameQuery(static::QUERY_WITH_RETURNING_FRAGMENT, $upsert);
-        $this->assertSameParameters(['adam@email.com', 'Adam', 100, null], $upsert);
+        $this->assertSameQuery(
+            'MERGE INTO {users} WITH (HOLDLOCK) AS {target} '
+            . 'USING (VALUES (?, ?)) AS {source} ({email}, {name}) '
+            . 'ON {target}.{email} = {source}.{email} '
+            . 'WHEN MATCHED THEN UPDATE SET {target}.{name} = {source}.{name} '
+            . 'WHEN NOT MATCHED THEN INSERT ({email}, {name}) VALUES ({source}.{email}, {source}.{name});',
+            $q,
+        );
     }
 
-    public function testReturningSingleValueFromDatabase(): void
+    public function testDoUpdateExplicitColumns(): void
     {
-        $schema = $this->schema('foo');
-        $schema->primary('id');
-        $schema->string('name')->nullable(false);
-        $schema->string('email', 64)->nullable(false);
-        $schema->integer('balance')->defaultValue(0);
-        $schema->index(['email'])->unique(true);
-        $schema->save();
+        $q = $this->database->insert('users')
+            ->values(['email' => 'a@b.c', 'name' => 'Alex', 'visits' => 1])
+            ->onConflict(OnConflict::target('email')->doUpdate(['name', 'visits']));
 
-        $table = $this->database->table('foo');
-
-        $this->assertTrue($table->exists());
-        $this->assertSame(0, $table->count());
-
-        $email = $table->upsert()
-            ->conflicts('email')
-            ->values([
-                'email' => 'adam@email.com',
-                'name' => 'Adam',
-                'balance' => 100,
-            ])
-            ->returning('email')
-            ->run();
-
-        $this->assertSame('adam@email.com', $email);
+        $this->assertSameQuery(
+            'MERGE INTO {users} WITH (HOLDLOCK) AS {target} '
+            . 'USING (VALUES (?, ?, ?)) AS {source} ({email}, {name}, {visits}) '
+            . 'ON {target}.{email} = {source}.{email} '
+            . 'WHEN MATCHED THEN UPDATE SET {target}.{name} = {source}.{name}, {target}.{visits} = {source}.{visits} '
+            . 'WHEN NOT MATCHED THEN INSERT ({email}, {name}, {visits}) '
+            . 'VALUES ({source}.{email}, {source}.{name}, {source}.{visits});',
+            $q,
+        );
     }
 
-    public function testReturningMultipleValuesFromDatabase(): void
+    public function testDoUpdateWithExpression(): void
     {
-        $schema = $this->schema('foo');
-        $schema->primary('id');
-        $schema->string('name')->nullable(false);
-        $schema->string('email', 64)->nullable(false);
-        $schema->integer('balance')->defaultValue(0);
-        $schema->index(['email'])->unique(true);
-        $schema->save();
+        $q = $this->database->insert('counters')
+            ->values(['key' => 'x', 'n' => 1])
+            ->onConflict(OnConflict::target('key')->doUpdate([
+                'n' => new Expression('target.n + source.n'),
+            ]));
 
-        $table = $this->database->table('foo');
-
-        $this->assertTrue($table->exists());
-        $this->assertSame(0, $table->count());
-
-        $result = $table->upsert()
-            ->conflicts('email')
-            ->values([
-                'email' => 'adam@email.com',
-                'name' => 'Adam',
-                'balance' => 100,
-            ])
-            ->returning('email', 'name', 'balance')
-            ->run();
-
-        $this->assertSame('adam@email.com', $result['email']);
-        $this->assertSame('Adam', $result['name']);
-        $this->assertSame('100', $result['balance']);
+        $this->assertSameQuery(
+            'MERGE INTO {counters} WITH (HOLDLOCK) AS {target} '
+            . 'USING (VALUES (?, ?)) AS {source} ({key}, {n}) '
+            . 'ON {target}.{key} = {source}.{key} '
+            . 'WHEN MATCHED THEN UPDATE SET {target}.{n} = {target}.{n} + {source}.{n} '
+            . 'WHEN NOT MATCHED THEN INSERT ({key}, {n}) VALUES ({source}.{key}, {source}.{n});',
+            $q,
+        );
     }
 
-    public function testEmptyStringReturnedWithoutPrimaryKeyAndReturningValues(): void
+    public function testDoNothing(): void
     {
-        $schema = $this->schema('bar');
-        $schema->string('name')->nullable(false);
-        $schema->string('email', 64)->nullable(false);
-        $schema->integer('balance')->defaultValue(0);
-        $schema->index(['email'])->unique(true);
-        $schema->save();
+        $q = $this->database->insert('logs')
+            ->values(['request_id' => 'r1', 'payload' => 'p'])
+            ->onConflict(OnConflict::target('request_id')->doNothing());
 
-        $table = $this->database->table('bar');
+        $this->assertSameQuery(
+            'MERGE INTO {logs} WITH (HOLDLOCK) AS {target} '
+            . 'USING (VALUES (?, ?)) AS {source} ({request_id}, {payload}) '
+            . 'ON {target}.{request_id} = {source}.{request_id} '
+            . 'WHEN NOT MATCHED THEN INSERT ({request_id}, {payload}) VALUES ({source}.{request_id}, {source}.{payload});',
+            $q,
+        );
+    }
 
-        $this->assertTrue($table->exists());
-        $this->assertSame(0, $table->count());
+    public function testPostgresOnConflictRejected(): void
+    {
+        $q = $this->database->insert('users')
+            ->values(['email' => 'a@b.c'])
+            ->onConflict(PostgresOnConflict::target('email')->doUpdate());
 
-        $result = $table->upsert()
-            ->conflicts('email')
-            ->values([
-                'email' => 'adam@email.com',
-                'name' => 'Adam',
-                'balance' => 100,
-            ])
-            ->run();
+        $this->expectException(BuilderException::class);
+        (string) $q;
+    }
 
-        $this->assertSame('', $result);
-        $this->assertEquals(
-            [
-                ['email' => 'adam@email.com', 'name' => 'Adam', 'balance' => 100],
-            ],
-            $table->select()->fetchAll(),
+    public function testUpsertWithReturningColumn(): void
+    {
+        /** @var SQLServerInsertQuery $q */
+        $q = $this->database->insert('users')
+            ->values(['email' => 'a@b.c', 'name' => 'Alex'])
+            ->onConflict('email');
+        $q->returning('id');
+
+        $this->assertSameQuery(
+            'MERGE INTO {users} WITH (HOLDLOCK) AS {target} '
+            . 'USING (VALUES (?, ?)) AS {source} ({email}, {name}) '
+            . 'ON {target}.{email} = {source}.{email} '
+            . 'WHEN MATCHED THEN UPDATE SET {target}.{name} = {source}.{name} '
+            . 'WHEN NOT MATCHED THEN INSERT ({email}, {name}) VALUES ({source}.{email}, {source}.{name}) '
+            . 'OUTPUT INSERTED.{id};',
+            $q,
+        );
+    }
+
+    public function testUpsertWithMultipleReturningColumns(): void
+    {
+        /** @var SQLServerInsertQuery $q */
+        $q = $this->database->insert('users')
+            ->values(['email' => 'a@b.c', 'name' => 'Alex'])
+            ->onConflict(OnConflict::target('email')->doNothing());
+        $q->returning('id', 'name');
+
+        $this->assertSameQuery(
+            'MERGE INTO {users} WITH (HOLDLOCK) AS {target} '
+            . 'USING (VALUES (?, ?)) AS {source} ({email}, {name}) '
+            . 'ON {target}.{email} = {source}.{email} '
+            . 'WHEN NOT MATCHED THEN INSERT ({email}, {name}) VALUES ({source}.{email}, {source}.{name}) '
+            . 'OUTPUT INSERTED.{id}, INSERTED.{name};',
+            $q,
+        );
+    }
+
+    public function testEmptyConflictTargetIsRejected(): void
+    {
+        // OnConflict::target() rejects empty input, so the compiler's empty-target guard
+        // is only reachable if an instance is constructed bypassing that validation.
+        $ref = new \ReflectionClass(SQLServerOnConflict::class);
+        $onConflict = $ref->newInstanceWithoutConstructor();
+        foreach (['target' => [], 'action' => ConflictAction::Update, 'update' => null] as $prop => $value) {
+            $p = new \ReflectionProperty(OnConflict::class, $prop);
+            $p->setValue($onConflict, $value);
+        }
+
+        $q = $this->database->insert('users')
+            ->values(['email' => 'a@b.c'])
+            ->onConflict($onConflict);
+
+        $this->expectException(CompilerException::class);
+        $this->expectExceptionMessage('Upsert query must define a conflict target.');
+        (string) $q;
+    }
+
+    public function testUpsertWithReturningFragment(): void
+    {
+        /** @var SQLServerInsertQuery $q */
+        $q = $this->database->insert('users')
+            ->values(['email' => 'a@b.c', 'name' => 'Alex'])
+            ->onConflict('email');
+        $q->returning(new Fragment('INSERTED.[name] as [full_name]'));
+
+        $this->assertSameQuery(
+            'MERGE INTO {users} WITH (HOLDLOCK) AS {target} '
+            . 'USING (VALUES (?, ?)) AS {source} ({email}, {name}) '
+            . 'ON {target}.{email} = {source}.{email} '
+            . 'WHEN MATCHED THEN UPDATE SET {target}.{name} = {source}.{name} '
+            . 'WHEN NOT MATCHED THEN INSERT ({email}, {name}) VALUES ({source}.{email}, {source}.{name}) '
+            . 'OUTPUT INSERTED.{name} as {full_name};',
+            $q,
         );
     }
 }

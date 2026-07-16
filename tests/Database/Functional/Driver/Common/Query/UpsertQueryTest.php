@@ -5,159 +5,133 @@ declare(strict_types=1);
 namespace Cycle\Database\Tests\Functional\Driver\Common\Query;
 
 use Cycle\Database\Driver\CompilerInterface;
+use Cycle\Database\Driver\Handler;
 use Cycle\Database\Exception\CompilerException;
-use Cycle\Database\Injection\Expression;
-use Cycle\Database\Injection\Fragment;
-use Cycle\Database\Injection\FragmentInterface;
-use Cycle\Database\Query\UpsertQuery;
+use Cycle\Database\Query\InsertQuery;
+use Cycle\Database\Query\OnConflict;
 use Cycle\Database\Tests\Functional\Driver\Common\BaseTest;
 
+/**
+ * Cross-driver behaviour expectations for upsert. Driver-specific SQL assertions live in
+ * per-driver subclasses.
+ */
 abstract class UpsertQueryTest extends BaseTest
 {
-    protected const QUERY_INSTANCE             = UpsertQuery::class;
-    protected const QUERY_REQUIRES_CONFLICTS   = true;
-    protected const QUERY_WITH_VALUES          = 'INSERT INTO {table} ({email}, {name}) VALUES (?, ?) ON CONFLICT ({email}) DO UPDATE SET {email} = EXCLUDED.{email}, {name} = EXCLUDED.{name}';
-    protected const QUERY_WITH_STATES_VALUES   = 'INSERT INTO {table} ({email}, {name}) VALUES (?, ?) ON CONFLICT ({email}) DO UPDATE SET {email} = EXCLUDED.{email}, {name} = EXCLUDED.{name}';
-    protected const QUERY_WITH_MULTIPLE_ROWS   = 'INSERT INTO {table} ({email}, {name}) VALUES (?, ?), (?, ?) ON CONFLICT ({email}) DO UPDATE SET {email} = EXCLUDED.{email}, {name} = EXCLUDED.{name}';
-    protected const QUERY_WITH_EXPRESSIONS     = 'INSERT INTO {table} ({email}, {name}, {created_at}, {updated_at}, {deleted_at}) VALUES (?, ?, NOW(), NOW(), ?) ON CONFLICT ({email}) DO UPDATE SET {email} = EXCLUDED.{email}, {name} = EXCLUDED.{name}, {created_at} = EXCLUDED.{created_at}, {updated_at} = EXCLUDED.{updated_at}, {deleted_at} = EXCLUDED.{deleted_at}';
-    protected const QUERY_WITH_FRAGMENTS       = 'INSERT INTO {table} ({email}, {name}, {created_at}, {updated_at}, {deleted_at}) VALUES (?, ?, NOW(), datetime(\'now\'), ?) ON CONFLICT ({email}) DO UPDATE SET {email} = EXCLUDED.{email}, {name} = EXCLUDED.{name}, {created_at} = EXCLUDED.{created_at}, {updated_at} = EXCLUDED.{updated_at}, {deleted_at} = EXCLUDED.{deleted_at}';
-    protected const QUERY_WITH_CUSTOM_FRAGMENT = 'INSERT INTO {table} ({email}, {name}, {expired_at}) VALUES (?, ?, NOW()) ON CONFLICT ({email}) DO UPDATE SET {email} = EXCLUDED.{email}, {name} = EXCLUDED.{name}, {expired_at} = EXCLUDED.{expired_at}';
-
-    public function testQueryInstance(): void
+    public function testOnConflictTurnsInsertIntoUpsertType(): void
     {
-        $this->assertInstanceOf(static::QUERY_INSTANCE, $this->database->upsert());
-        $this->assertInstanceOf(static::QUERY_INSTANCE, $this->database->table->upsert());
+        $q = $this->database->insert('table')->values(['email' => 'a@b.c']);
+        $this->assertSame(CompilerInterface::INSERT_QUERY, $q->getType());
+
+        $q->onConflict('email');
+        $this->assertSame(CompilerInterface::UPSERT_QUERY, $q->getType());
     }
 
-    public function testNoConflictsThrowsException(): void
+    public function testShorthandIsEquivalentToTargetDoUpdate(): void
     {
-        if (static::QUERY_REQUIRES_CONFLICTS) {
-            $this->expectException(CompilerException::class);
-            $this->expectExceptionMessage('Upsert query must define conflicting index column names');
+        $a = $this->database->insert('t')->values(['email' => 'x', 'name' => 'y'])
+            ->onConflict('email');
 
-            $this->db()->upsert('table')
-                ->values(
-                    [
-                        'email' => 'adam@email.com',
-                        'name' => 'Adam',
-                    ],
-                )->__toString();
-        } else {
-            $this->assertFalse(static::QUERY_REQUIRES_CONFLICTS);
-        }
+        $b = $this->database->insert('t')->values(['email' => 'x', 'name' => 'y'])
+            ->onConflict(OnConflict::target('email')->doUpdate());
+
+        $this->assertSame($a->sqlStatement(), $b->sqlStatement());
     }
 
-    public function testNoColumnsThrowsException(): void
+    public function testShorthandAcceptsArrayOfColumns(): void
     {
+        $q = $this->database->insert('t')
+            ->values(['tenant_id' => 1, 'email' => 'x', 'name' => 'y'])
+            ->onConflict(['tenant_id', 'email']);
+
+        $this->assertSame(CompilerInterface::UPSERT_QUERY, $q->getType());
+        $this->assertInstanceOf(InsertQuery::class, $q);
+    }
+
+    public function testOnConflictReturnsInsertQuery(): void
+    {
+        $q = $this->database->insert('t')->values(['email' => 'x']);
+        $this->assertSame($q, $q->onConflict('email'));
+    }
+
+    public function testEmptyValuesRejected(): void
+    {
+        $q = $this->database->insert('t')
+            ->onConflict(OnConflict::target('email')->doUpdate());
+
         $this->expectException(CompilerException::class);
-        $this->expectExceptionMessage('Upsert query must define at least one column');
-
-        $this->db()->upsert('table')
-            ->conflicts('email')
-            ->values([])->__toString();
+        (string) $q;
     }
 
-    public function testQueryWithValues(): void
-    {
-        $upsert = $this->db()->upsert('table')
-            ->conflicts('email')
-            ->values(
-                [
-                    'email' => 'adam@email.com',
-                    'name' => 'Adam',
-                ],
-            );
+    // --- Runtime (execution against a live database) ---
 
-        $this->assertSameQuery(static::QUERY_WITH_VALUES, $upsert);
-        $this->assertSameParameters(['adam@email.com', 'Adam'], $upsert);
+    public function testRuntimeDoUpdateUpdatesExistingRow(): void
+    {
+        $this->makeUpsertUsersTable();
+        $this->database->insert('upsert_users')->values(['email' => 'a@b.c', 'name' => 'Old'])->run();
+
+        $this->database->insert('upsert_users')
+            ->values(['email' => 'a@b.c', 'name' => 'New'])
+            ->onConflict('email')
+            ->run();
+
+        $rows = $this->database->select()->from('upsert_users')->fetchAll();
+        $this->assertCount(1, $rows, 'Conflicting row must be updated, not duplicated.');
+        $this->assertSame('New', $rows[0]['name']);
     }
 
-    public function testQueryWithStatesValues(): void
+    public function testRuntimeDoUpdateSelectiveColumns(): void
     {
-        $upsert = $this->database->upsert('table')
-            ->conflicts('email')
-            ->columns('email', 'name')
-            ->values('adam@email.com', 'Adam');
+        $this->makeUpsertUsersTable();
+        $this->database->insert('upsert_users')
+            ->values(['email' => 'a@b.c', 'name' => 'Old', 'tag' => 'keep'])->run();
 
-        $this->assertSameQuery(static::QUERY_WITH_STATES_VALUES, $upsert);
-        $this->assertSameParameters(['adam@email.com', 'Adam'], $upsert);
+        $this->database->insert('upsert_users')
+            ->values(['email' => 'a@b.c', 'name' => 'New', 'tag' => 'drop'])
+            ->onConflict(OnConflict::target('email')->doUpdate(['name']))
+            ->run();
+
+        $rows = $this->database->select()->from('upsert_users')->fetchAll();
+        $this->assertCount(1, $rows);
+        $this->assertSame('New', $rows[0]['name']);
+        $this->assertSame('keep', $rows[0]['tag'], 'Columns outside the update list must be preserved.');
     }
 
-    public function testQueryWithMultipleRows(): void
+    public function testRuntimeDoNothingPreservesExistingRow(): void
     {
-        $upsert = $this->database->upsert('table')
-            ->conflicts('email')
-            ->columns('email', 'name')
-            ->values('adam@email.com', 'Adam')
-            ->values('bill@email.com', 'Bill');
+        $this->makeUpsertUsersTable();
+        $this->database->insert('upsert_users')->values(['email' => 'a@b.c', 'name' => 'Old'])->run();
 
-        $this->assertSameQuery(static::QUERY_WITH_MULTIPLE_ROWS, $upsert);
-        $this->assertSameParameters(['adam@email.com', 'Adam', 'bill@email.com', 'Bill'], $upsert);
+        $this->database->insert('upsert_users')
+            ->values(['email' => 'a@b.c', 'name' => 'New'])
+            ->onConflict(OnConflict::target('email')->doNothing())
+            ->run();
+
+        $rows = $this->database->select()->from('upsert_users')->fetchAll();
+        $this->assertCount(1, $rows);
+        $this->assertSame('Old', $rows[0]['name'], 'DO NOTHING must keep the original row.');
     }
 
-    public function testQueryWithMultipleRowsAsArray(): void
+    public function testRuntimeInsertsWhenNoConflict(): void
     {
-        $upsert = $this->database->upsert('table')
-            ->conflicts('email')
-            ->values([
-                ['email' => 'adam@email.com', 'name' => 'Adam'],
-                ['email' => 'bill@email.com', 'name' => 'Bill'],
-            ]);
+        $this->makeUpsertUsersTable();
+        $this->database->insert('upsert_users')->values(['email' => 'a@b.c', 'name' => 'Old'])->run();
 
-        $this->assertSameQuery(static::QUERY_WITH_MULTIPLE_ROWS, $upsert);
-        $this->assertSameParameters(['adam@email.com', 'Adam', 'bill@email.com', 'Bill'], $upsert);
+        $this->database->insert('upsert_users')
+            ->values(['email' => 'x@y.z', 'name' => 'New'])
+            ->onConflict('email')
+            ->run();
+
+        $this->assertCount(2, $this->database->select()->from('upsert_users')->fetchAll());
     }
 
-    public function testQueryWithExpressions(): void
+    private function makeUpsertUsersTable(): void
     {
-        $upsert = $this->database->upsert('table')
-            ->conflicts('email')
-            ->values([
-                'email' => 'adam@email.com',
-                'name' => 'Adam',
-                'created_at' => new Expression('NOW()'),
-                'updated_at' => new Expression('NOW()'),
-                'deleted_at' => null,
-            ]);
-
-        $this->assertSameQuery(static::QUERY_WITH_EXPRESSIONS, $upsert);
-        $this->assertSameParameters(['adam@email.com', 'Adam', null], $upsert);
-    }
-
-    public function testQueryWithFragments(): void
-    {
-        $upsert = $this->database->upsert('table')
-            ->conflicts('email')
-            ->values([
-                'email' => 'adam@email.com',
-                'name' => 'Adam',
-                'created_at' => new Fragment('NOW()'),
-                'updated_at' => new Fragment('datetime(\'now\')'),
-                'deleted_at' => null,
-            ]);
-
-        $this->assertSameQuery(static::QUERY_WITH_FRAGMENTS, $upsert);
-        $this->assertSameParameters(['adam@email.com', 'Adam', null], $upsert);
-    }
-
-    public function testQueryWithCustomFragment(): void
-    {
-        $fragment = $this->createMock(FragmentInterface::class);
-        $fragment->method('getType')->willReturn(CompilerInterface::FRAGMENT);
-        $fragment->method('getTokens')->willReturn([
-            'fragment' => 'NOW()',
-            'parameters' => [],
-        ]);
-
-        $upsert = $this->database->upsert('table')
-            ->conflicts('email')
-            ->values([
-                'email' => 'adam@email.com',
-                'name' => 'Adam',
-                'expired_at' => $fragment,
-            ]);
-
-        $this->assertSameQuery(static::QUERY_WITH_CUSTOM_FRAGMENT, $upsert);
-        $this->assertSameParameters(['adam@email.com', 'Adam'], $upsert);
+        $schema = $this->schema('upsert_users');
+        $schema->primary('id');
+        $schema->string('email');
+        $schema->string('name');
+        $schema->string('tag')->nullable(true);
+        $schema->index(['email'])->unique(true);
+        $schema->save(Handler::DO_ALL);
     }
 }

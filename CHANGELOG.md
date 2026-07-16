@@ -1,5 +1,62 @@
 # Changelog
 
+## [2.21.0](https://github.com/cycle/database/compare/2.20.0...2.21.0) (2026-06-24)
+
+
+### Features
+
+* **OnConflict:** index-inference predicate for ON CONFLICT (Postgres/SQLite) ([#258](https://github.com/cycle/database/issues/258)) ([bdd2cea](https://github.com/cycle/database/commit/bdd2cea509efbb1c63d35d14c4addb55ea0cc005))
+
+
+### Bug Fixes
+
+* **MySQL:** omit row alias on upsert DO NOTHING — the alias made the no-op `col = col` ambiguous at runtime ([bdd2cea](https://github.com/cycle/database/commit/bdd2cea509efbb1c63d35d14c4addb55ea0cc005))
+* **Postgres:** unquote EXCLUDED in upsert DO UPDATE — quoted "EXCLUDED" broke every update-branch upsert at runtime ([bdd2cea](https://github.com/cycle/database/commit/bdd2cea509efbb1c63d35d14c4addb55ea0cc005))
+
+## [2.20.0](https://github.com/cycle/database/compare/2.19.0...2.20.0) (2026-06-11)
+
+
+### Features
+
+* **SelectQuery:** refine Psalm integer types on query bounds ([#257](https://github.com/cycle/database/issues/257)) ([2cae328](https://github.com/cycle/database/commit/2cae328e5025fa4c6a8d00a01d63c0da31b35c21))
+
+
+### Bug Fixes
+
+* **SelectQuery:** process the last partial chunk in `runChunks()` ([#255](https://github.com/cycle/database/issues/255)) ([38c3403](https://github.com/cycle/database/commit/38c340327f7e2ce45d9485df77e8dc6546ddd779))
+
+## [2.19.0](https://github.com/cycle/database/compare/2.18.0...2.19.0) (2026-05-28)
+
+
+### Features
+
+* Add `wrapOnWhere()` method to group JOIN ON conditions ([#253](https://github.com/cycle/database/issues/253)) ([aafa2f6](https://github.com/cycle/database/commit/aafa2f62970a0c29a2964a32c48a05607943992e))
+
+
+### Tests
+
+* **OnConflict:** add tests for cache key generation with update parameters ([a064944](https://github.com/cycle/database/commit/a064944c741f4d29507ff9fa8db241386356a583))
+
+## [2.18.0](https://github.com/cycle/database/compare/2.17.0...2.18.0) (2026-05-28)
+
+
+### Features
+
+* Add `InsertQuery::onConflict()` method ([#249](https://github.com/cycle/database/issues/249)) ([395a7ff](https://github.com/cycle/database/commit/395a7ff42116c1d4978d5cb20f4e66786c10b906))
+* Add `SelectQuery::wrapWhere()` to group WHERE conditions ([#250](https://github.com/cycle/database/issues/250)) ([8f7c03a](https://github.com/cycle/database/commit/8f7c03a589260716d0211202e9969c4c3d0d285c))
+
+## [2.17.0](https://github.com/cycle/database/compare/2.16.0...2.17.0) (2026-05-14)
+
+
+### Features
+
+* Add server-side cursors for streaming SELECT results ([#247](https://github.com/cycle/database/issues/247)) ([2acc10e](https://github.com/cycle/database/commit/2acc10e0e709c24f35fc3d0d93cf57189ead89fb))
+
+
+### Code Refactoring
+
+* Rename `CursorableInterface` to `CursorInterface` ([89dbfda](https://github.com/cycle/database/commit/89dbfdabf3361655316870ade76155a9fa545712))
+
 ## [2.16.0](https://github.com/cycle/database/compare/2.15.2...2.16.0) (2026-03-19)
 
 

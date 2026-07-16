@@ -15,6 +15,8 @@ use Cycle\Database\Exception\CompilerException;
 use Cycle\Database\Injection\FragmentInterface;
 use Cycle\Database\Injection\Parameter;
 use Cycle\Database\Injection\ParameterInterface;
+use Cycle\Database\Query\ConflictAction;
+use Cycle\Database\Query\OnConflict;
 use Cycle\Database\Query\QueryParameters;
 
 abstract class Compiler implements CompilerInterface
@@ -173,40 +175,133 @@ abstract class Compiler implements CompilerInterface
     }
 
     /**
-     * @psalm-return non-empty-string
+     * Compile UPSERT (INSERT ... ON CONFLICT ...) for Postgres/SQLite-compatible dialects.
+     *
+     * @param array{
+     *     table: non-empty-string,
+     *     columns: list<non-empty-string>,
+     *     values: list<mixed>,
+     *     onConflict: OnConflict,
+     * } $tokens
+     *
+     * @return non-empty-string
      */
     protected function upsertQuery(QueryParameters $params, Quoter $q, array $tokens): string
     {
-        if (\count($tokens['conflicts']) === 0) {
-            throw new CompilerException('Upsert query must define conflicting index column names');
+        $onConflict = $this->requireOnConflict($tokens);
+
+        if ($tokens['columns'] === []) {
+            throw new CompilerException('Upsert query must define at least one column.');
         }
 
-        if (\count($tokens['columns']) === 0) {
-            throw new CompilerException('Upsert query must define at least one column');
+        $target = $onConflict->getTarget();
+        if ($target === []) {
+            throw new CompilerException('Upsert query must define a conflict target.');
         }
 
         $values = [];
-
         foreach ($tokens['values'] as $value) {
             $values[] = $this->value($params, $q, $value);
         }
 
-        $updates = \array_map(
-            function (string $column) use ($params, $q) {
-                $name   = $this->name($params, $q, $column);
-                return \sprintf('%s = EXCLUDED.%s', $name, $name);
-            },
-            $tokens['columns'],
-        );
-
-        return \sprintf(
-            'INSERT INTO %s (%s) VALUES %s ON CONFLICT (%s) DO UPDATE SET %s',
+        $head = \sprintf(
+            'INSERT INTO %s (%s) VALUES %s ON CONFLICT %s',
             $this->name($params, $q, $tokens['table'], true),
             $this->columns($params, $q, $tokens['columns']),
             \implode(', ', $values),
-            $this->columns($params, $q, $tokens['conflicts']),
-            \implode(', ', $updates),
+            $this->conflictTarget($params, $q, $onConflict),
         );
+
+        if ($onConflict->getAction() === ConflictAction::Nothing) {
+            return $head . ' DO NOTHING';
+        }
+
+        $updates = $this->upsertUpdateClause(
+            $params,
+            $q,
+            $tokens['columns'],
+            $target,
+            $onConflict->getUpdate(),
+            'EXCLUDED',
+        );
+
+        return $head . ' DO UPDATE SET ' . $updates;
+    }
+
+    /**
+     * Render the conflict target after `ON CONFLICT`: `(col, ...)`, plus — on drivers
+     * that inherit the Postgres inference clause — an index predicate
+     * `(col, ...) WHERE <predicate>`. Driver compilers override to extend it.
+     *
+     * @psalm-return non-empty-string
+     */
+    protected function conflictTarget(QueryParameters $params, Quoter $q, OnConflict $onConflict): string
+    {
+        return '(' . $this->columns($params, $q, $onConflict->getTarget()) . ')';
+    }
+
+    /**
+     * @psalm-assert OnConflict $tokens['onConflict']
+     */
+    protected function requireOnConflict(array $tokens): OnConflict
+    {
+        $onConflict = $tokens['onConflict'] ?? null;
+        $onConflict instanceof OnConflict or throw new CompilerException(
+            'Upsert query requires onConflict state to be configured.',
+        );
+
+        return $onConflict;
+    }
+
+    /**
+     * Build the column-assignment list for a DO UPDATE / ON DUPLICATE KEY UPDATE clause.
+     *
+     * @param list<string>                            $insertedColumns Columns from the INSERT column list.
+     * @param list<string>                            $target          Conflict target columns (excluded from auto-update list).
+     * @param list<string>|array<string, mixed>|null  $update          Update spec (null = all, list = subset, map = expressions).
+     * @param string                                  $sourceAlias     Pseudo-table name for source row (EXCLUDED, new_row, source).
+     * @param string|null                             $targetAlias     If non-null, qualifies each LHS column with `<targetAlias>.col` (used by MERGE).
+     *
+     * @psalm-return non-empty-string
+     */
+    protected function upsertUpdateClause(
+        QueryParameters $params,
+        Quoter $q,
+        array $insertedColumns,
+        array $target,
+        null|array $update,
+        string $sourceAlias,
+        ?string $targetAlias = null,
+    ): string {
+        // EXCLUDED is a Postgres/SQLite keyword pseudo-table, not a real alias: it must
+        // stay unquoted (Postgres rejects the quoted "EXCLUDED" with "missing FROM-clause
+        // entry"). MySQL/SQLServer pass real aliases (new_row/source) that are quoted.
+        $source = $sourceAlias === 'EXCLUDED' ? 'EXCLUDED' : $this->quoteIdentifier($sourceAlias);
+        $targetPrefix = $targetAlias !== null ? $this->quoteIdentifier($targetAlias) . '.' : '';
+
+        if ($update === null) {
+            $columns = \array_values(\array_diff($insertedColumns, $target));
+            $columns === [] and $columns = $insertedColumns;
+
+            return $this->upsertAssignmentsFromSource($params, $q, $columns, $source, $targetPrefix);
+        }
+
+        if (\array_is_list($update)) {
+            /** @var list<string> $update */
+            return $this->upsertAssignmentsFromSource($params, $q, $update, $source, $targetPrefix);
+        }
+
+        $parts = [];
+        foreach ($update as $column => $value) {
+            $parts[] = \sprintf(
+                '%s%s = %s',
+                $targetPrefix,
+                $this->name($params, $q, $column),
+                $this->value($params, $q, $value),
+            );
+        }
+
+        return \implode(', ', $parts);
     }
 
     /**
@@ -649,6 +744,29 @@ abstract class Compiler implements CompilerInterface
     protected function compileJsonOrderBy(string $path): string|FragmentInterface
     {
         return $path;
+    }
+
+    /**
+     * @param list<string> $columns
+     *
+     * @psalm-return non-empty-string
+     */
+    private function upsertAssignmentsFromSource(
+        QueryParameters $params,
+        Quoter $q,
+        array $columns,
+        string $quotedSourceAlias,
+        string $targetPrefix,
+    ): string {
+        $parts = \array_map(
+            function (string $column) use ($params, $q, $quotedSourceAlias, $targetPrefix) {
+                $name = $this->name($params, $q, $column);
+                return \sprintf('%s%s = %s.%s', $targetPrefix, $name, $quotedSourceAlias, $name);
+            },
+            $columns,
+        );
+
+        return \implode(', ', $parts);
     }
 
     private function arrayToInOperator(QueryParameters $params, Quoter $q, array $values, bool $in): string

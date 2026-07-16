@@ -18,6 +18,7 @@ use Cycle\Database\Driver\Quoter;
 use Cycle\Database\Exception\CompilerException;
 use Cycle\Database\Injection\FragmentInterface;
 use Cycle\Database\Injection\Parameter;
+use Cycle\Database\Query\ConflictAction;
 use Cycle\Database\Query\QueryParameters;
 
 /**
@@ -38,35 +39,56 @@ class MySQLCompiler extends Compiler implements CachingCompilerInterface
     }
 
     /**
-     * @psalm-return non-empty-string
+     * Compile UPSERT as `INSERT ... AS <alias> ON DUPLICATE KEY UPDATE col = <alias>.col`.
+     * Requires MySQL 8.0.19+ (row-alias syntax). The alias defaults to
+     * {@see MySQLOnConflict::DEFAULT_ROW_ALIAS}; customize via
+     * {@see MySQLOnConflict::withRowAlias()} if it collides with a real column name.
      */
     protected function upsertQuery(QueryParameters $params, Quoter $q, array $tokens): string
     {
-        if (\count($tokens['columns']) === 0) {
-            throw new CompilerException('Upsert query must define at least one column');
+        $onConflict = MySQLOnConflict::from($this->requireOnConflict($tokens));
+
+        if ($tokens['columns'] === []) {
+            throw new CompilerException('Upsert query must define at least one column.');
         }
 
         $values = [];
-
         foreach ($tokens['values'] as $value) {
             $values[] = $this->value($params, $q, $value);
         }
 
-        $updates = \array_map(
-            function ($column) use ($params, $q) {
-                $name   = $this->name($params, $q, $column);
-                return \sprintf('%s = VALUES(%s)', $name, $name);
-            },
-            $tokens['columns'],
-        );
-
-        return \sprintf(
-            'INSERT INTO %s (%s) VALUES %s ON DUPLICATE KEY UPDATE %s',
+        $base = \sprintf(
+            'INSERT INTO %s (%s) VALUES %s',
             $this->name($params, $q, $tokens['table'], true),
             $this->columns($params, $q, $tokens['columns']),
             \implode(', ', $values),
-            \implode(', ', $updates),
         );
+
+        if ($onConflict->getAction() === ConflictAction::Nothing) {
+            // MySQL has no DO NOTHING — emulate with a no-op self-assignment on the
+            // conflict-target column (or the first inserted column as a fallback).
+            // No row alias is emitted here: without `AS <alias>` the bare `col = col`
+            // is unambiguous; with the alias in scope MySQL rejects it as ambiguous.
+            $target = $onConflict->getTarget();
+            $noopColumn = $target[0] ?? $tokens['columns'][0];
+            $name = $this->name($params, $q, $noopColumn);
+            return $base . ' ON DUPLICATE KEY UPDATE ' . \sprintf('%s = %s', $name, $name);
+        }
+
+        // DO UPDATE references the inserted row via `col = <alias>.col`, so the alias is required.
+        $rowAlias = $onConflict->getRowAlias();
+        $head = $base . ' AS ' . $this->quoteIdentifier($rowAlias);
+
+        $updates = $this->upsertUpdateClause(
+            $params,
+            $q,
+            $tokens['columns'],
+            $onConflict->getTarget(),
+            $onConflict->getUpdate(),
+            $rowAlias,
+        );
+
+        return $head . ' ON DUPLICATE KEY UPDATE ' . $updates;
     }
 
     /**
